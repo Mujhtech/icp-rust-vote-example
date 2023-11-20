@@ -1,5 +1,8 @@
 #[macro_use]
 extern crate serde;
+
+use ic_cdk::caller;
+use validator::Validate;
 use candid::{Decode, Encode};
 use ic_cdk::api::time;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
@@ -13,6 +16,7 @@ type IdCell = Cell<u64, Memory>;
 #[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
 struct Quiz {
     id: u64,
+    author: String,
     question: String,
     options: Vec<String>,
     answers: HashMap<String, u32>,
@@ -53,20 +57,22 @@ thread_local! {
         ));
     }
 
-#[derive(candid::CandidType, Serialize, Deserialize, Default)]
+#[derive(candid::CandidType, Serialize, Deserialize, Default, Validate)]
 struct QuizPayload {
+    #[validate(length(min = 10))]
     question: String,
+    #[validate(length(min = 2))]
     options: Vec<String>,
 }
 
 
 #[ic_cdk::query]
 fn get_all_quiz() -> Result<Vec<Quiz>, Error> {
-    let quizzesMap : Vec<(u64, Quiz)> =  STORAGE.with(|service| service.borrow().iter().collect());
-    let length = quizzesMap.len();
+    let quizzes_map : Vec<(u64, Quiz)> =  STORAGE.with(|service| service.borrow().iter().collect());
+    let length = quizzes_map.len();
     let mut quizzes: Vec<Quiz> = Vec::new();
     for key in 0..length {
-        quizzes.push(quizzesMap.get(key).unwrap().clone().1);
+        quizzes.push(quizzes_map.get(key).unwrap().clone().1);
     }
 
     if quizzes.len() > 0 {
@@ -96,6 +102,7 @@ fn _get_quiz(id: &u64) -> Option<Quiz> {
 
 #[ic_cdk::update]
 fn create_quiz(payload: QuizPayload) -> Option<Quiz> {
+    payload.validate().expect("Input validation failed");
     let id = ID_COUNTER
         .with(|counter| {
             let current_value = *counter.borrow().get();
@@ -112,6 +119,7 @@ fn create_quiz(payload: QuizPayload) -> Option<Quiz> {
 
     let quiz = Quiz {
         id,
+        author: caller().to_string(),
         question: payload.question,
         options: payload.options,
         answers,
@@ -131,13 +139,12 @@ fn do_insert(quiz: &Quiz) {
 
 #[ic_cdk::update]
 fn update_quiz(id: u64, payload: QuizPayload) -> Result<Quiz, Error> {
-
+    payload.validate().expect("Input validation failed");
     let quiz_option: Option<Quiz> = STORAGE.with(|service| service.borrow().get(&id));
 
     match quiz_option {
-
         Some(mut quiz) => {
-
+            assert!(quiz.author == caller().to_string(), "Not author of quiz");
 
             let mut answers = HashMap::new();
 
@@ -164,6 +171,9 @@ fn update_quiz(id: u64, payload: QuizPayload) -> Result<Quiz, Error> {
 
 #[ic_cdk::update]
 fn delete_quiz(id: u64) -> Result<Quiz, Error> {
+    let quiz: Option<Quiz> = STORAGE.with(|service| service.borrow().get(&id));
+    assert!(quiz.is_some(), "Quiz doesn't exist");
+    assert!(quiz.unwrap().author == caller().to_string(), "Not author of quiz");
     match STORAGE.with(|service| service.borrow_mut().remove(&id)) {
         Some(quiz) => Ok(quiz),
         None => Err(Error::NotFound {
